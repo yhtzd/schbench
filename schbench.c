@@ -1161,6 +1161,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	struct timeval start;
 	struct stats wakeup_stats;
 	struct stats request_stats;
+	unsigned long long last_loop_count = 0;
 	unsigned long long loop_count;
 	unsigned long long loop_runtime;
 	unsigned long long delta;
@@ -1199,18 +1200,24 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 		} else if (!pipe_test) {
 			delta = tvdelta(&last_calc, &now);
 			if (delta >= interval_usec) {
+				double rps;
+
 				memset(&wakeup_stats, 0, sizeof(wakeup_stats));
 				memset(&request_stats, 0, sizeof(request_stats));
 				combine_message_thread_stats(&wakeup_stats,
 					     &request_stats, message_threads_mem,
 					     &loop_count, &loop_runtime);
+				last_calc = now;
+
+				rps = (double)((loop_count - last_loop_count) * USEC_PER_SEC) / delta;
+				last_loop_count = loop_count;
+
 				show_latencies(&wakeup_stats, "Wakeup",
 					       runtime_delta / USEC_PER_SEC);
 				show_latencies(&request_stats, "Request",
 					       runtime_delta / USEC_PER_SEC);
-				last_calc = now;
-				fprintf(stdout, "rps: %.2f\n",
-					(double)(loop_count * USEC_PER_SEC) / runtime_delta);
+				fprintf(stdout, "rps: %.2f\n", rps);
+
 			}
 		}
 		if (zero_usec) {
