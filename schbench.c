@@ -402,7 +402,8 @@ static void show_latencies(struct stats *s, unsigned long long runtime)
 
 	len = calc_percentiles(s->plat, s->nr_samples, &ovals, &ocounts);
 	if (len) {
-		fprintf(stderr, "Latency percentiles (usec) runtime %llu (s) (%lu total samples)\n", runtime, s->nr_samples);
+		fprintf(stderr, "Wakeup latency percentiles (usec) runtime %llu (s) (%lu total samples)\n",
+			runtime, s->nr_samples);
 		for (i = 0; i < len; i++)
 			fprintf(stderr, "\t%s%2.1fth: %-10u (%lu samples)\n",
 				i == PLIST_P99 ? "* " : "  ",
@@ -679,6 +680,8 @@ static void xlist_wake_all(struct thread_data *td)
 static struct request *msg_and_wait(struct thread_data *td)
 {
 	struct request *req;
+	struct timeval now;
+	unsigned long long delta;
 
 	if (pipe_test)
 		memset(td->pipe_page, 2, pipe_test);
@@ -711,6 +714,10 @@ static struct request *msg_and_wait(struct thread_data *td)
 		/* if he hasn't already woken us up, wait */
 		fwait(&td->futex, NULL);
 	}
+	gettimeofday(&now, NULL);
+	delta = tvdelta(&td->wake_time, &now);
+	if (delta > 0)
+		add_lat(&td->stats, delta);
 
 	return NULL;
 }
@@ -1003,7 +1010,6 @@ void *worker_thread(void *arg)
 	struct thread_data *td = arg;
 	struct timeval now;
 	struct timeval start;
-	unsigned long long delta;
 	struct request *req = NULL;
 
 	gettimeofday(&start, NULL);
@@ -1019,9 +1025,7 @@ void *worker_thread(void *arg)
 				do_work(td);
 
 				gettimeofday(&now, NULL);
-				delta = tvdelta(&req->start_time, &now);
 				td->runtime = tvdelta(&start, &now);
-				add_lat(&td->stats, delta);
 
 				free(req);
 				req = tmp;
@@ -1032,13 +1036,6 @@ void *worker_thread(void *arg)
 			td->loop_count++;
 			gettimeofday(&now, NULL);
 			td->runtime = tvdelta(&start, &now);
-		}
-
-		if (!requests_per_sec) {
-			gettimeofday(&now, NULL);
-			delta = tvdelta(&td->wake_time, &now);
-			if (delta > 0)
-				add_lat(&td->stats, delta);
 		}
 	}
 	gettimeofday(&now, NULL);
