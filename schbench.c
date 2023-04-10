@@ -42,19 +42,16 @@ static int runtime = 30;
 /* -s  usec */
 static int sleeptime = 30000;
 /* -C  usec */
-static int message_cputime = 30000;
 /* -w  seconds */
 static int warmuptime = 5;
 /* -i  seconds */
 static int intervaltime = 10;
 /* -z  seconds */
 static int zerotime = 0;
-/* -c  usec */
-static unsigned long long cputime = 30000;
 /* -f  cache_footprint_kb */
 static unsigned long cache_footprint_kb = 1536;
 /* -n  operations */
-static unsigned long operations = 0;
+static unsigned long operations = 10;
 /* -a, bool */
 static int autobench = 0;
 /* -j jitter bool */
@@ -106,8 +103,6 @@ static struct option long_options[] = {
 	{"rps", required_argument, 0, 'R'},
 	{"auto-rps", required_argument, 0, 'A'},
 	{"sleeptime", required_argument, 0, 's'},
-	{"message_cputime", required_argument, 0, 'C'},
-	{"cputime", required_argument, 0, 'c'},
 	{"cache_footprint", required_argument, 0, 'f'},
 	{"operations", required_argument, 0, 'n'},
 	{"warmuptime", required_argument, 0, 'w'},
@@ -124,10 +119,8 @@ static void print_usage(void)
 		"\t-t (--threads): worker threads per message thread (def: 16)\n"
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
 		"\t-s (--sleeptime): Message thread latency (usec, def: 30000\n"
-		"\t-C (--message_cputime): Message thread think time (usec, def: 30000\n"
-		"\t-c (--cputime): How long to think during loop (usec, def: 30000\n"
 		"\t-F (--cache_footprint): cache footprint (kb, def: 6144)\n"
-		"\t-n (--operations): operations to perform (def: 0)\n"
+		"\t-n (--operations): think time operations to perform (def: 10)\n"
 		"\t-a (--auto): grow thread count until latencies hurt (def: off)\n"
 		"\t-j (--jitter): add jitter to sleep/cputimes (def: off)\n"
 		"\t-A (--auto-rps): grow RPS until cpu utilization hits target (def: none)\n"
@@ -144,9 +137,7 @@ static void parse_options(int ac, char **av)
 {
 	int c;
 	int found_sleeptime = -1;
-	int found_cputime = -1;
 	int found_warmuptime = -1;
-	int found_message_cputime = -1;
 
 	while (1) {
 		int option_index = 0;
@@ -179,18 +170,10 @@ static void parse_options(int ac, char **av)
 				pipe_test = PIPE_TRANSFER_BUFFER;
 			}
 			sleeptime = 0;
-			cputime = 0;
 			warmuptime = 0;
-			message_cputime = 0;
 			break;
 		case 's':
 			found_sleeptime = atoi(optarg);
-			break;
-		case 'c':
-			found_cputime = atoi(optarg);
-			break;
-		case 'C':
-			found_message_cputime = atoi(optarg);
 			break;
 		case 'w':
 			found_warmuptime = atoi(optarg);
@@ -234,12 +217,8 @@ static void parse_options(int ac, char **av)
 	 */
 	if (found_sleeptime >= 0)
 		sleeptime = found_sleeptime;
-	if (found_cputime >= 0)
-		cputime = found_cputime;
 	if (found_warmuptime >= 0)
 		warmuptime = found_warmuptime;
-	if (found_message_cputime >= 0)
-		message_cputime = message_cputime;
 
 	if (optind < ac) {
 		fprintf(stderr, "Error Extra arguments '%s'\n", av[optind]);
@@ -455,13 +434,6 @@ void combine_stats(struct stats *d, struct stats *s)
 static void add_lat(struct stats *s, unsigned int us)
 {
 	int lat_index = 0;
-
-	if (!matrix_size) {
-		if (us > cputime)
-			us -= cputime;
-		else
-			us = 1;
-	}
 
 	if (us > s->max)
 		s->max = us;
@@ -825,31 +797,6 @@ float read_busy(int fd, char *buf, int len,
 #error Unsupported architecture
 #endif
 
-static void usec_spin(unsigned long spin_time)
-{
-	struct timeval now;
-	struct timeval start;
-	unsigned long long delta;
-
-	if (spin_time == 0)
-		return;
-
-	if (jitter) {
-		unsigned int seed = pthread_self();
-		unsigned long new_time = rand_r(&seed) % spin_time;
-		spin_time = new_time + 1;
-	}
-
-	gettimeofday(&start, NULL);
-	while (1) {
-		gettimeofday(&now, NULL);
-		delta = tvdelta(&start, &now);
-		if (delta > spin_time)
-			return;
-		nop;
-	}
-}
-
 /*
  * once the message thread starts all his children, this is where he
  * loops until our runtime is up.  Basically this sits around waiting
@@ -877,7 +824,6 @@ static void run_msg_thread(struct thread_data *td)
 		 * messages shouldn't be instant, sleep a little to make them
 		 * wait
 		 */
-		usec_spin(message_cputime);
 		if (!pipe_test && sleeptime) {
 			jitter = rand_r(&seed) % max_jitter;
 			usleep(sleeptime + jitter);
@@ -1009,7 +955,8 @@ static void run_rps_thread(struct thread_data *worker_threads_mem)
 		}
 
 	}
-	fprintf(stderr, "final rps was %llu\n", requests_per_sec);
+	if (auto_rps)
+		fprintf(stderr, "final rps goal was %llu\n", requests_per_sec);
 }
 
 /*
@@ -1041,14 +988,10 @@ static void do_some_math(struct thread_data *thread_data)
  */
 static void do_work(struct thread_data *td)
 {
-	if (matrix_size) {
-		unsigned long i;
+	unsigned long i;
 
-		for (i = 0; i < operations; i++)
-			do_some_math(td);
-	} else {
-		usec_spin(cputime);
-	}
+	for (i = 0; i < operations; i++)
+		do_some_math(td);
 }
 
 /*
@@ -1125,13 +1068,10 @@ void *message_thread(void *arg)
 
 	for (i = 0; i < worker_threads; i++) {
 		pthread_t tid;
-
-		if (matrix_size) {
-			worker_threads_mem[i].data = malloc(3 * sizeof(unsigned long) * matrix_size * matrix_size);
-			if (!worker_threads_mem[i].data) {
-				perror("unable to allocate ram");
-				pthread_exit((void *)-ENOMEM);
-			}
+		worker_threads_mem[i].data = malloc(3 * sizeof(unsigned long) * matrix_size * matrix_size);
+		if (!worker_threads_mem[i].data) {
+			perror("unable to allocate ram");
+			pthread_exit((void *)-ENOMEM);
 		}
 
 		worker_threads_mem[i].msg_thread = td;
@@ -1296,14 +1236,12 @@ int main(int ac, char **av)
 	double loops_per_sec;
 	int p99 = 0;
 	int p95 = 0;
-	double diff;
 	unsigned long long loop_count;
 	unsigned long long loop_runtime;
 
 	parse_options(ac, av);
 
-	if (operations)
-		matrix_size = sqrt(cache_footprint_kb * 1024 / 3 / sizeof(unsigned long));
+	matrix_size = sqrt(cache_footprint_kb * 1024 / 3 / sizeof(unsigned long));
 
 again:
 	requests_per_sec /= message_threads;
@@ -1351,8 +1289,8 @@ again:
 	calc_p99(&stats, &p95, &p99);
 
 	if (autobench) {
-		fprintf(stdout, "cputime %Lu threads %d p99 %d\n",
-			cputime, worker_threads, p99);
+		fprintf(stdout, "threads %d p99 %d\n",
+			worker_threads, p99);
 		if (p99 < 2000) {
 			worker_threads++;
 			goto again;
@@ -1372,10 +1310,8 @@ again:
 
 	}
 	if (requests_per_sec) {
-		diff = (double)p99 / cputime;
-		fprintf(stdout, "rps: %.2f p95 (usec) %d p99 (usec) %d p95/cputime %.2f%% p99/cputime %.2f%%\n",
-				(double)(loop_count) / runtime, p95, p99, ((double)p95 / cputime) * 100,
-				diff * 100);
+		fprintf(stdout, "rps: %.2f p95 (usec) %d p99 (usec) %d\n",
+				(double)(loop_count) / runtime, p95, p99);
 	}
 
 	return 0;
