@@ -39,9 +39,6 @@ static int message_threads = 2;
 static int worker_threads = 16;
 /* -r  seconds */
 static int runtime = 30;
-/* -s  usec */
-static int sleeptime = 30000;
-/* -C  usec */
 /* -w  seconds */
 static int warmuptime = 5;
 /* -i  seconds */
@@ -102,7 +99,6 @@ static struct option long_options[] = {
 	{"runtime", required_argument, 0, 'r'},
 	{"rps", required_argument, 0, 'R'},
 	{"auto-rps", required_argument, 0, 'A'},
-	{"sleeptime", required_argument, 0, 's'},
 	{"cache_footprint", required_argument, 0, 'f'},
 	{"operations", required_argument, 0, 'n'},
 	{"warmuptime", required_argument, 0, 'w'},
@@ -118,7 +114,6 @@ static void print_usage(void)
 		"\t-m (--message-threads): number of message threads (def: 2)\n"
 		"\t-t (--threads): worker threads per message thread (def: 16)\n"
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
-		"\t-s (--sleeptime): Message thread latency (usec, def: 30000\n"
 		"\t-F (--cache_footprint): cache footprint (kb, def: 6144)\n"
 		"\t-n (--operations): think time operations to perform (def: 10)\n"
 		"\t-a (--auto): grow thread count until latencies hurt (def: off)\n"
@@ -136,7 +131,6 @@ static void print_usage(void)
 static void parse_options(int ac, char **av)
 {
 	int c;
-	int found_sleeptime = -1;
 	int found_warmuptime = -1;
 
 	while (1) {
@@ -169,11 +163,7 @@ static void parse_options(int ac, char **av)
 					PIPE_TRANSFER_BUFFER);
 				pipe_test = PIPE_TRANSFER_BUFFER;
 			}
-			sleeptime = 0;
 			warmuptime = 0;
-			break;
-		case 's':
-			found_sleeptime = atoi(optarg);
 			break;
 		case 'w':
 			found_warmuptime = atoi(optarg);
@@ -212,11 +202,9 @@ static void parse_options(int ac, char **av)
 	}
 
 	/*
-	 * by default pipe mode zeros out cputime and sleep time.  This
+	 * by default pipe mode zeros out some options.  This
 	 * sets them to any args that were actually passed in
 	 */
-	if (found_sleeptime >= 0)
-		sleeptime = found_sleeptime;
 	if (found_warmuptime >= 0)
 		warmuptime = found_warmuptime;
 
@@ -811,10 +799,6 @@ float read_busy(int fd, char *buf, int len,
  */
 static void run_msg_thread(struct thread_data *td)
 {
-	unsigned int seed = pthread_self();
-	int max_jitter = sleeptime / 4;
-	int jitter = 0;
-
 	while (1) {
 		td->futex = FUTEX_BLOCKED;
 		xlist_wake_all(td);
@@ -823,17 +807,7 @@ static void run_msg_thread(struct thread_data *td)
 			xlist_wake_all(td);
 			break;
 		}
-		if (sleeptime)
-			fwait(&td->futex, NULL);
-
-		/*
-		 * messages shouldn't be instant, sleep a little to make them
-		 * wait
-		 */
-		if (!pipe_test && sleeptime) {
-			jitter = rand_r(&seed) % max_jitter;
-			usleep(sleeptime + jitter);
-		}
+		fwait(&td->futex, NULL);
 	}
 }
 
@@ -1023,6 +997,7 @@ void *worker_thread(void *arg)
 			struct request *tmp;
 
 			gettimeofday(&work_start, NULL);
+
 			do_work(td);
 
 			gettimeofday(&now, NULL);
