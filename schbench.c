@@ -61,7 +61,7 @@ static int auto_rps = 0;
 /* -p bytes */
 static int pipe_test = 0;
 /* -R requests per sec */
-static unsigned long long requests_per_sec = 0;
+static int requests_per_sec = 0;
 
 /* the message threads flip this to true when they decide runtime is up */
 static volatile unsigned long stopping = 0;
@@ -860,7 +860,6 @@ void auto_scale_rps(int *proc_stat_fd,
 	busy = read_busy(fd, proc_stat_buf, 512, total_time, total_idle);
 	if (first_run)
 		return;
-
 	if (busy < auto_rps) {
 		delta = (float)auto_rps / busy;
 		/* delta is > 1 */
@@ -906,37 +905,25 @@ void auto_scale_rps(int *proc_stat_fd,
  */
 static void run_rps_thread(struct thread_data *worker_threads_mem)
 {
-	/* number to wake at a time */
-	int nr_to_wake = worker_threads * 2 / 3;
-	/* how many times we tried to wake up workers */
-	unsigned long total_wake_runs = 0;
-	/* list to record tasks waiting for work */
-	/* how many times do we need to batch wakeups per second */
-	int wakeups_required;
 	/* start and end of the thread run */
 	struct timeval start;
+	struct timeval now;
 	struct request *request;
+	unsigned long long delta;
 
-	/* how long do we sleep between wakeup batches */
+	/* how long do we sleep between each wake */
 	unsigned long sleep_time;
-	/* total number of times we kicked a worker */
-	unsigned long total_wakes = 0;
+	int batch = 8;
 	int cur_tid = 0;
 	int i;
 
-	gettimeofday(&start, NULL);
-
 	while (1) {
-		wakeups_required = (requests_per_sec + nr_to_wake - 1) / nr_to_wake;
-		sleep_time = USEC_PER_SEC / wakeups_required;
-
-		/* start with a sleep to give everyone the chance to get going */
-		usleep(sleep_time);
-
 		gettimeofday(&start, NULL);
-
-		for (i = 0; i < nr_to_wake; i++) {
+		sleep_time = (USEC_PER_SEC / requests_per_sec) * batch;
+		for (i = 1; i < requests_per_sec + 1; i++) {
 			struct thread_data *worker;
+
+			gettimeofday(&now, NULL);
 
 			worker = worker_threads_mem + cur_tid % worker_threads;
 			cur_tid++;
@@ -948,21 +935,31 @@ static void run_rps_thread(struct thread_data *worker_threads_mem)
 			worker->pending++;
 			request = allocate_request();
 			request_add(worker, request);
-			total_wakes++;
-			memcpy(&worker->wake_time, &start, sizeof(start));
+			memcpy(&worker->wake_time, &now, sizeof(now));
 			fpost(&worker->futex);
+			if ((i % batch) == 0)
+				usleep(sleep_time);
 		}
-		total_wake_runs++;
+		gettimeofday(&now, NULL);
+
+		delta = tvdelta(&start, &now);
+		while (delta < USEC_PER_SEC) {
+			delta = USEC_PER_SEC - delta;
+			usleep(delta);
+
+			gettimeofday(&now, NULL);
+			delta = tvdelta(&start, &now);
+		}
 
 		if (stopping) {
 			for (i = 0; i < worker_threads; i++)
 				fpost(&worker_threads_mem[i].futex);
 			break;
 		}
-
 	}
+
 	if (auto_rps)
-		fprintf(stderr, "final rps goal was %llu\n", requests_per_sec);
+		fprintf(stderr, "final rps goal was %d\n", requests_per_sec);
 }
 
 /*
@@ -1019,6 +1016,9 @@ void *worker_thread(void *arg)
 			break;
 
 		req = msg_and_wait(td);
+		if (requests_per_sec && !req)
+			continue;
+
 		do {
 			struct request *tmp;
 
