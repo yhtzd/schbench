@@ -377,7 +377,7 @@ static unsigned int calc_percentiles(unsigned int *io_u_plat, unsigned long nr,
 	return len;
 }
 
-static void calc_p99(struct stats *s, int *p95, int *p99)
+static void calc_p99(struct stats *s, int *p99)
 {
 	unsigned int *ovals = NULL;
 	unsigned long *ocounts = NULL;
@@ -386,15 +386,13 @@ static void calc_p99(struct stats *s, int *p95, int *p99)
 	len = calc_percentiles(s->plat, s->nr_samples, &ovals, &ocounts);
 	if (len && len > PLIST_P99)
 		*p99 = ovals[PLIST_P99];
-	if (len && len > PLIST_P99)
-		*p95 = ovals[PLIST_P95];
 	if (ovals)
 		free(ovals);
 	if (ocounts)
 		free(ocounts);
 }
 
-static void show_latencies(struct stats *s, unsigned long long runtime)
+static void show_latencies(struct stats *s, char *label, unsigned long long runtime)
 {
 	unsigned int *ovals = NULL;
 	unsigned long *ocounts = NULL;
@@ -402,8 +400,8 @@ static void show_latencies(struct stats *s, unsigned long long runtime)
 
 	len = calc_percentiles(s->plat, s->nr_samples, &ovals, &ocounts);
 	if (len) {
-		fprintf(stderr, "Wakeup latency percentiles (usec) runtime %llu (s) (%lu total samples)\n",
-			runtime, s->nr_samples);
+		fprintf(stderr, "%s latency percentiles (usec) runtime %llu (s) (%lu total samples)\n",
+			label, runtime, s->nr_samples);
 		for (i = 0; i < len; i++)
 			fprintf(stderr, "\t%s%2.1fth: %-10u (%lu samples)\n",
 				i == PLIST_P99 ? "* " : "  ",
@@ -476,7 +474,8 @@ struct thread_data {
 	int futex;
 
 	/* mr axboe's magic latency histogram */
-	struct stats stats;
+	struct stats wakeup_stats;
+	struct stats request_stats;
 	unsigned long long loop_count;
 	unsigned long long runtime;
 	unsigned long pending;
@@ -717,7 +716,7 @@ static struct request *msg_and_wait(struct thread_data *td)
 	gettimeofday(&now, NULL);
 	delta = tvdelta(&td->wake_time, &now);
 	if (delta > 0)
-		add_lat(&td->stats, delta);
+		add_lat(&td->wakeup_stats, delta);
 
 	return NULL;
 }
@@ -1009,7 +1008,9 @@ void *worker_thread(void *arg)
 {
 	struct thread_data *td = arg;
 	struct timeval now;
+	struct timeval work_start;
 	struct timeval start;
+	unsigned long long delta;
 	struct request *req = NULL;
 
 	gettimeofday(&start, NULL);
@@ -1018,25 +1019,25 @@ void *worker_thread(void *arg)
 			break;
 
 		req = msg_and_wait(td);
-		if (requests_per_sec) {
-			while (req) {
-				struct request *tmp = req->next;
+		do {
+			struct request *tmp;
 
-				do_work(td);
-
-				gettimeofday(&now, NULL);
-				td->runtime = tvdelta(&start, &now);
-
-				free(req);
-				req = tmp;
-				td->loop_count++;
-			}
-		} else {
+			gettimeofday(&work_start, NULL);
 			do_work(td);
-			td->loop_count++;
+
 			gettimeofday(&now, NULL);
 			td->runtime = tvdelta(&start, &now);
-		}
+			if (req) {
+				tmp = req->next;
+				free(req);
+				req = tmp;
+			}
+			td->loop_count++;
+
+			delta = tvdelta(&work_start, &now);
+			if (delta > 0)
+				add_lat(&td->request_stats, delta);
+		} while (req);
 	}
 	gettimeofday(&now, NULL);
 	td->runtime = tvdelta(&start, &now);
@@ -1109,7 +1110,8 @@ static double pretty_size(double number, char **str)
 	return number;
 }
 
-static void combine_message_thread_stats(struct stats *stats,
+static void combine_message_thread_stats(struct stats *wakeup_stats,
+					 struct stats *request_stats,
 					struct thread_data *thread_data,
 					unsigned long long *loop_count,
 					unsigned long long *loop_runtime)
@@ -1125,7 +1127,8 @@ static void combine_message_thread_stats(struct stats *stats,
 		index++;
 		for (i = 0; i < worker_threads; i++) {
 			worker = thread_data + index++;
-			combine_stats(stats, &worker->stats);
+			combine_stats(wakeup_stats, &worker->wakeup_stats);
+			combine_stats(request_stats, &worker->request_stats);
 			*loop_count += worker->loop_count;
 			*loop_runtime += worker->runtime;
 		}
@@ -1143,7 +1146,8 @@ static void reset_thread_stats(struct thread_data *thread_data)
 		index++;
 		for (i = 0; i < worker_threads; i++) {
 			worker = thread_data + index++;
-			memset(&worker->stats, 0, sizeof(worker->stats));
+			memset(&worker->wakeup_stats, 0, sizeof(worker->wakeup_stats));
+			memset(&worker->request_stats, 0, sizeof(worker->request_stats));
 		}
 	}
 }
@@ -1155,7 +1159,8 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	struct timeval zero_time;
 	struct timeval last_calc;
 	struct timeval start;
-	struct stats stats;
+	struct stats wakeup_stats;
+	struct stats request_stats;
 	unsigned long long loop_count;
 	unsigned long long loop_runtime;
 	unsigned long long delta;
@@ -1172,7 +1177,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	unsigned long long total_idle = 0;
 
 
-	memset(&stats, 0, sizeof(stats));
+	memset(&wakeup_stats, 0, sizeof(wakeup_stats));
 	gettimeofday(&start, NULL);
 	last_calc = start;
 	zero_time = start;
@@ -1194,15 +1199,18 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 		} else if (!pipe_test) {
 			delta = tvdelta(&last_calc, &now);
 			if (delta >= interval_usec) {
-				memset(&stats, 0, sizeof(stats));
-				combine_message_thread_stats(&stats, message_threads_mem,
+				memset(&wakeup_stats, 0, sizeof(wakeup_stats));
+				memset(&request_stats, 0, sizeof(request_stats));
+				combine_message_thread_stats(&wakeup_stats,
+					     &request_stats, message_threads_mem,
 					     &loop_count, &loop_runtime);
-				show_latencies(&stats, runtime_delta / USEC_PER_SEC);
+				show_latencies(&wakeup_stats, "Wakeup",
+					       runtime_delta / USEC_PER_SEC);
+				show_latencies(&request_stats, "Request",
+					       runtime_delta / USEC_PER_SEC);
 				last_calc = now;
-				if (requests_per_sec) {
-					fprintf(stdout, "rps: %.2f\n",
-						(double)(loop_count * USEC_PER_SEC) / runtime_delta);
-				}
+				fprintf(stdout, "rps: %.2f\n",
+					(double)(loop_count * USEC_PER_SEC) / runtime_delta);
 			}
 		}
 		if (zero_usec) {
@@ -1229,10 +1237,9 @@ int main(int ac, char **av)
 	int i;
 	int ret;
 	struct thread_data *message_threads_mem = NULL;
-	struct stats stats;
+	struct stats wakeup_stats;
+	struct stats request_stats;
 	double loops_per_sec;
-	int p99 = 0;
-	int p95 = 0;
 	unsigned long long loop_count;
 	unsigned long long loop_runtime;
 
@@ -1244,7 +1251,8 @@ again:
 	requests_per_sec /= message_threads;
 	loops_per_sec = 0;
 	stopping = 0;
-	memset(&stats, 0, sizeof(stats));
+	memset(&wakeup_stats, 0, sizeof(wakeup_stats));
+	memset(&request_stats, 0, sizeof(request_stats));
 
 	message_threads_mem = calloc(message_threads * worker_threads + message_threads,
 				      sizeof(struct thread_data));
@@ -1275,27 +1283,29 @@ again:
 		fpost(&message_threads_mem[index].futex);
 		pthread_join(message_threads_mem[index].tid, NULL);
 	}
-	memset(&stats, 0, sizeof(stats));
-	combine_message_thread_stats(&stats, message_threads_mem,
+	memset(&wakeup_stats, 0, sizeof(wakeup_stats));
+	memset(&request_stats, 0, sizeof(request_stats));
+	combine_message_thread_stats(&wakeup_stats, &request_stats,
+				     message_threads_mem,
 				     &loop_count, &loop_runtime);
 
 	loops_per_sec = loop_count * USEC_PER_SEC;
 	loops_per_sec /= loop_runtime;
 
 	free(message_threads_mem);
-	calc_p99(&stats, &p95, &p99);
 
 	if (autobench) {
+		int p99 = 0;
+		calc_p99(&wakeup_stats, &p99);
 		fprintf(stdout, "threads %d p99 %d\n",
 			worker_threads, p99);
 		if (p99 < 2000) {
 			worker_threads++;
 			goto again;
 		}
-		show_latencies(&stats, runtime);
-	} else {
-		show_latencies(&stats, runtime);
 	}
+	show_latencies(&wakeup_stats, "Wakeup", runtime);
+	show_latencies(&request_stats, "Request", runtime);
 
 	if (pipe_test) {
 		char *pretty;
@@ -1306,10 +1316,7 @@ again:
 		       loops_per_sec, mb_per_sec, pretty);
 
 	}
-	if (requests_per_sec) {
-		fprintf(stdout, "rps: %.2f p95 (usec) %d p99 (usec) %d\n",
-				(double)(loop_count) / runtime, p95, p99);
-	}
+	fprintf(stdout, "rps: %.2f\n", (double)(loop_count) / runtime);
 
 	return 0;
 }
