@@ -68,6 +68,13 @@ static volatile unsigned long stopping = 0;
 /* size of matrices to multiply */
 static unsigned long matrix_size = 0;
 
+struct per_cpu_lock {
+	pthread_mutex_t lock;
+} __attribute__((aligned));
+
+static struct per_cpu_lock *per_cpu_locks;
+static int num_cpu_locks;
+
 /*
  * one stat struct per thread data, when the workers sleep this records the
  * latency between when they are woken up and when they actually get the
@@ -988,15 +995,35 @@ static void do_some_math(struct thread_data *thread_data)
 	}
 }
 
+static pthread_mutex_t *lock_this_cpu(void)
+{
+	int cpu = sched_getcpu();
+	pthread_mutex_t *lock;
+	if (cpu < 0) {
+		perror("sched_getcpu failed\n");
+		exit(1);
+	}
+	lock = &per_cpu_locks[cpu].lock;
+	while (pthread_mutex_trylock(lock) != 0)
+		nop;
+	return lock;
+
+}
+
 /*
  * spin or do some matrix arithmetic
  */
 static void do_work(struct thread_data *td)
 {
+	pthread_mutex_t *lock = NULL;
 	unsigned long i;
 
+	if (!calibrate_only)
+		lock = lock_this_cpu();
 	for (i = 0; i < operations; i++)
 		do_some_math(td);
+	if (!calibrate_only)
+		pthread_mutex_unlock(lock);
 }
 
 /*
@@ -1024,7 +1051,21 @@ void *worker_thread(void *arg)
 		do {
 			struct request *tmp;
 
-			gettimeofday(&work_start, NULL);
+			if (calibrate_only) {
+				/*
+				 * in calibration mode, don't include the
+				 * usleep in the timing
+				 */
+				usleep(100);
+				gettimeofday(&work_start, NULL);
+			} else {
+				/*
+				 * lets start off with some simulated networking,
+				 * and also make sure we get a fresh clean timeslice
+				 */
+				gettimeofday(&work_start, NULL);
+				usleep(100);
+			}
 
 			do_work(td);
 
@@ -1275,6 +1316,22 @@ int main(int ac, char **av)
 
 	matrix_size = sqrt(cache_footprint_kb * 1024 / 3 / sizeof(unsigned long));
 
+	num_cpu_locks = get_nprocs();
+	per_cpu_locks = calloc(num_cpu_locks, sizeof(struct per_cpu_lock));
+	if (!per_cpu_locks) {
+		perror("unable to allocate memory for per cpu locks\n");
+		exit(1);
+	}
+
+	for (i = 0; i < num_cpu_locks; i++) {
+		pthread_mutex_t *lock = &per_cpu_locks[i].lock;
+		ret = pthread_mutex_init(lock, NULL);
+		if (ret) {
+			perror("mutex init failed\n");
+			exit(1);
+		}
+	}
+
 again:
 	requests_per_sec /= message_threads;
 	loops_per_sec = 0;
@@ -1352,6 +1409,5 @@ again:
 	if (!auto_rps)
 		fprintf(stdout, "average rps: %.2f\n",
 			(double)(loop_count) / runtime);
-
 	return 0;
 }
