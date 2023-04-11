@@ -55,6 +55,7 @@ static int autobench = 0;
 static int jitter = 0;
 /* -A, int percentage busy */
 static int auto_rps = 0;
+static int auto_rps_target_hit = 0;
 /* -p bytes */
 static int pipe_test = 0;
 /* -R requests per sec */
@@ -80,10 +81,11 @@ struct stats {
 	unsigned int min;
 };
 
+struct stats rps_stats;
+
 /* this defines which latency profiles get printed */
-#define PLIST_P99 4
-#define PLIST_P95 3
-static double plist[PLAT_LIST_MAX] = { 50.0, 75.0, 90.0, 95.0, 99.0, 99.5, 99.9 };
+#define PLIST_P99 2
+static double plist[PLAT_LIST_MAX] = { 50.0, 90.0, 99.0, 99.9 };
 
 enum {
 	HELP_LONG_OPT = 1,
@@ -380,7 +382,8 @@ static void calc_p99(struct stats *s, int *p99)
 		free(ocounts);
 }
 
-static void show_latencies(struct stats *s, char *label, unsigned long long runtime)
+static void show_latencies(struct stats *s, char *label, char *units,
+			   unsigned long long runtime)
 {
 	unsigned int *ovals = NULL;
 	unsigned long *ocounts = NULL;
@@ -388,8 +391,8 @@ static void show_latencies(struct stats *s, char *label, unsigned long long runt
 
 	len = calc_percentiles(s->plat, s->nr_samples, &ovals, &ocounts);
 	if (len) {
-		fprintf(stderr, "%s latency percentiles (usec) runtime %llu (s) (%lu total samples)\n",
-			label, runtime, s->nr_samples);
+		fprintf(stderr, "%s percentiles (%s) runtime %llu (s) (%lu total samples)\n",
+			label, units, runtime, s->nr_samples);
 		for (i = 0; i < len; i++)
 			fprintf(stderr, "\t%s%2.1fth: %-10u (%lu samples)\n",
 				i == PLIST_P99 ? "* " : "  ",
@@ -841,6 +844,11 @@ void auto_scale_rps(int *proc_stat_fd,
 			delta = 3;
 		} else if (delta < 1.2) {
 			delta = 1 + (delta - 1) / 8;
+			if (delta < 1.05 && !auto_rps_target_hit) {
+				auto_rps_target_hit = 1;
+				memset(&rps_stats, 0, sizeof(rps_stats));
+			}
+
 		} else if (delta < 1.5) {
 			delta = 1 + (delta - 1) / 4;
 		}
@@ -859,6 +867,10 @@ void auto_scale_rps(int *proc_stat_fd,
 			delta = 0.3;
 		} else if (delta > .9) {
 			delta += (1 - delta) / 8;
+			if (delta > .95 && !auto_rps_target_hit) {
+				auto_rps_target_hit = 1;
+				memset(&rps_stats, 0, sizeof(rps_stats));
+			}
 		} else if (delta > .8) {
 			delta += (1 - delta) / 4;
 		}
@@ -867,6 +879,10 @@ void auto_scale_rps(int *proc_stat_fd,
 			target = 0;
 	} else {
 		target = requests_per_sec;
+		if (!auto_rps_target_hit) {
+			auto_rps_target_hit = 1;
+			memset(&rps_stats, 0, sizeof(rps_stats));
+		}
 	}
 	requests_per_sec = target;
 }
@@ -1121,6 +1137,7 @@ static void reset_thread_stats(struct thread_data *thread_data)
 	int msg_i;
 	int index = 0;
 
+	memset(&rps_stats, 0, sizeof(rps_stats));
 	for (msg_i = 0; msg_i < message_threads; msg_i++) {
 		index++;
 		for (i = 0; i < worker_threads; i++) {
@@ -1150,6 +1167,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	unsigned long long interval_usec = intervaltime * USEC_PER_SEC;
 	unsigned long long zero_usec = zerotime * USEC_PER_SEC;
 	int warmup_done = 0;
+	int total_intervals = 0;
 
 	/* if we're autoscaling RPS */
 	int proc_stat_fd = -1;
@@ -1191,12 +1209,19 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 				rps = (double)((loop_count - last_loop_count) * USEC_PER_SEC) / delta;
 				last_loop_count = loop_count;
 
-				show_latencies(&wakeup_stats, "Wakeup",
-					       runtime_delta / USEC_PER_SEC);
-				show_latencies(&request_stats, "Request",
-					       runtime_delta / USEC_PER_SEC);
-				fprintf(stdout, "rps: %.2f\n", rps);
+				if (!auto_rps || auto_rps_target_hit)
+					add_lat(&rps_stats, rps);
 
+				show_latencies(&wakeup_stats, "Wakeup Latencies",
+					       "usec", runtime_delta / USEC_PER_SEC);
+				show_latencies(&request_stats, "Request Latencies",
+					       "usec", runtime_delta / USEC_PER_SEC);
+				if (total_intervals > 10) {
+					show_latencies(&rps_stats, "RPS",
+						       "requests", runtime_delta / USEC_PER_SEC);
+				}
+				fprintf(stdout, "current rps: %.2f\n", rps);
+				total_intervals++;
 			}
 		}
 		if (zero_usec) {
@@ -1239,6 +1264,7 @@ again:
 	stopping = 0;
 	memset(&wakeup_stats, 0, sizeof(wakeup_stats));
 	memset(&request_stats, 0, sizeof(request_stats));
+	memset(&rps_stats, 0, sizeof(rps_stats));
 
 	message_threads_mem = calloc(message_threads * worker_threads + message_threads,
 				      sizeof(struct thread_data));
@@ -1290,8 +1316,9 @@ again:
 			goto again;
 		}
 	}
-	show_latencies(&wakeup_stats, "Wakeup", runtime);
-	show_latencies(&request_stats, "Request", runtime);
+	show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime);
+	show_latencies(&request_stats, "Request Latencies", "usec", runtime);
+	show_latencies(&rps_stats, "RPS", "requests", runtime);
 
 	if (pipe_test) {
 		char *pretty;
@@ -1303,7 +1330,7 @@ again:
 
 	}
 	if (!auto_rps)
-		fprintf(stdout, "rps: %.2f\n", (double)(loop_count) / runtime);
+		fprintf(stdout, "average rps: %.2f\n", (double)(loop_count) / runtime);
 
 	return 0;
 }
