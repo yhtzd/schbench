@@ -84,8 +84,17 @@ struct stats {
 struct stats rps_stats;
 
 /* this defines which latency profiles get printed */
-#define PLIST_P99 2
-static double plist[PLAT_LIST_MAX] = { 50.0, 90.0, 99.0, 99.9 };
+#define PLIST_20 (1 << 0)
+#define PLIST_50 (1 << 1)
+#define PLIST_90 (1 << 2)
+#define PLIST_99 (1 << 3)
+#define PLIST_99_INDEX 3
+#define PLIST_999 (1 << 4)
+
+#define PLIST_FOR_LAT (PLIST_50 | PLIST_90 | PLIST_99 | PLIST_999)
+#define PLIST_FOR_RPS (PLIST_20 | PLIST_50 | PLIST_90)
+
+static double plist[PLAT_LIST_MAX] = { 20.0, 50.0, 90.0, 99.0, 99.9 };
 
 enum {
 	HELP_LONG_OPT = 1,
@@ -374,8 +383,8 @@ static void calc_p99(struct stats *s, int *p99)
 	int len;
 
 	len = calc_percentiles(s->plat, s->nr_samples, &ovals, &ocounts);
-	if (len && len > PLIST_P99)
-		*p99 = ovals[PLIST_P99];
+	if (len && len > PLIST_99_INDEX)
+		*p99 = ovals[PLIST_99_INDEX];
 	if (ovals)
 		free(ovals);
 	if (ocounts)
@@ -383,7 +392,8 @@ static void calc_p99(struct stats *s, int *p99)
 }
 
 static void show_latencies(struct stats *s, char *label, char *units,
-			   unsigned long long runtime)
+			   unsigned long long runtime, unsigned long mask,
+			   unsigned long star)
 {
 	unsigned int *ovals = NULL;
 	unsigned long *ocounts = NULL;
@@ -393,10 +403,14 @@ static void show_latencies(struct stats *s, char *label, char *units,
 	if (len) {
 		fprintf(stderr, "%s percentiles (%s) runtime %llu (s) (%lu total samples)\n",
 			label, units, runtime, s->nr_samples);
-		for (i = 0; i < len; i++)
+		for (i = 0; i < len; i++) {
+			unsigned long bit = 1 << i;
+			if (!(mask & bit))
+				continue;
 			fprintf(stderr, "\t%s%2.1fth: %-10u (%lu samples)\n",
-				i == PLIST_P99 ? "* " : "  ",
+				bit == star ? "* " : "  ",
 				plist[i], ovals[i], ocounts[i]);
+		}
 	}
 
 	if (ovals)
@@ -1213,12 +1227,15 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 					add_lat(&rps_stats, rps);
 
 				show_latencies(&wakeup_stats, "Wakeup Latencies",
-					       "usec", runtime_delta / USEC_PER_SEC);
+					       "usec", runtime_delta / USEC_PER_SEC,
+					       PLIST_FOR_LAT, PLIST_99);
 				show_latencies(&request_stats, "Request Latencies",
-					       "usec", runtime_delta / USEC_PER_SEC);
+					       "usec", runtime_delta / USEC_PER_SEC,
+					       PLIST_FOR_LAT, PLIST_99);
 				if (total_intervals > 10) {
 					show_latencies(&rps_stats, "RPS",
-						       "requests", runtime_delta / USEC_PER_SEC);
+						       "requests", runtime_delta / USEC_PER_SEC,
+						       PLIST_FOR_RPS, PLIST_50);
 				}
 				fprintf(stdout, "current rps: %.2f\n", rps);
 				total_intervals++;
@@ -1316,9 +1333,12 @@ again:
 			goto again;
 		}
 	}
-	show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime);
-	show_latencies(&request_stats, "Request Latencies", "usec", runtime);
-	show_latencies(&rps_stats, "RPS", "requests", runtime);
+	show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
+		       PLIST_FOR_LAT, PLIST_99);
+	show_latencies(&request_stats, "Request Latencies", "usec", runtime,
+		       PLIST_FOR_LAT, PLIST_99);
+	show_latencies(&rps_stats, "RPS", "requests", runtime,
+		       PLIST_FOR_RPS, PLIST_50);
 
 	if (pipe_test) {
 		char *pretty;
