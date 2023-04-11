@@ -48,7 +48,7 @@ static int zerotime = 0;
 /* -f  cache_footprint_kb */
 static unsigned long cache_footprint_kb = 1536;
 /* -n  operations */
-static unsigned long operations = 10;
+static unsigned long operations = 1;
 /* -a, bool */
 static int autobench = 0;
 /* -j jitter bool */
@@ -115,7 +115,7 @@ static void print_usage(void)
 		"\t-t (--threads): worker threads per message thread (def: 16)\n"
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
 		"\t-F (--cache_footprint): cache footprint (kb, def: 6144)\n"
-		"\t-n (--operations): think time operations to perform (def: 10)\n"
+		"\t-n (--operations): think time operations to perform (def: 1)\n"
 		"\t-a (--auto): grow thread count until latencies hurt (def: off)\n"
 		"\t-j (--jitter): add jitter to sleep/cputimes (def: off)\n"
 		"\t-A (--auto-rps): grow RPS until cpu utilization hits target (def: none)\n"
@@ -999,6 +999,10 @@ void *worker_thread(void *arg)
 			gettimeofday(&work_start, NULL);
 
 			do_work(td);
+			usleep(10);
+
+			do_work(td);
+			usleep(10);
 
 			gettimeofday(&now, NULL);
 			td->runtime = tvdelta(&start, &now);
@@ -1298,7 +1302,8 @@ again:
 		       loops_per_sec, mb_per_sec, pretty);
 
 	}
-	fprintf(stdout, "rps: %.2f\n", (double)(loop_count) / runtime);
+	if (!auto_rps)
+		fprintf(stdout, "rps: %.2f\n", (double)(loop_count) / runtime);
 
 	return 0;
 }
