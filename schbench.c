@@ -51,8 +51,6 @@ static unsigned long cache_footprint_kb = 1536;
 static unsigned long operations = 1;
 /* -a, bool */
 static int autobench = 0;
-/* -j jitter bool */
-static int jitter = 0;
 /* -A, int percentage busy */
 static int auto_rps = 0;
 static int auto_rps_target_hit = 0;
@@ -60,13 +58,14 @@ static int auto_rps_target_hit = 0;
 static int pipe_test = 0;
 /* -R requests per sec */
 static int requests_per_sec = 0;
+/* -C bool for calibration mode */
+static int calibrate_only = 0;
 
 /* the message threads flip this to true when they decide runtime is up */
 static volatile unsigned long stopping = 0;
 
 /* size of matrices to multiply */
 static unsigned long matrix_size = 0;
-
 
 /*
  * one stat struct per thread data, when the workers sleep this records the
@@ -100,10 +99,9 @@ enum {
 	HELP_LONG_OPT = 1,
 };
 
-char *option_string = "p:am:t:s:c:C:r:R:w:i:z:A:jn:F:";
+char *option_string = "p:am:t:Cr:R:w:i:z:A:n:F:";
 static struct option long_options[] = {
 	{"auto", no_argument, 0, 'a'},
-	{"jitter", no_argument, 0, 'j'},
 	{"pipe", required_argument, 0, 'p'},
 	{"message-threads", required_argument, 0, 'm'},
 	{"threads", required_argument, 0, 't'},
@@ -111,6 +109,7 @@ static struct option long_options[] = {
 	{"rps", required_argument, 0, 'R'},
 	{"auto-rps", required_argument, 0, 'A'},
 	{"cache_footprint", required_argument, 0, 'f'},
+	{"calibrate", no_argument, 0, 'C'},
 	{"operations", required_argument, 0, 'n'},
 	{"warmuptime", required_argument, 0, 'w'},
 	{"intervaltime", required_argument, 0, 'i'},
@@ -122,13 +121,13 @@ static struct option long_options[] = {
 static void print_usage(void)
 {
 	fprintf(stderr, "schbench usage:\n"
+		"\t-C (--calibrate): run our work loop and report on timing\n"
 		"\t-m (--message-threads): number of message threads (def: 2)\n"
 		"\t-t (--threads): worker threads per message thread (def: 16)\n"
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
 		"\t-F (--cache_footprint): cache footprint (kb, def: 6144)\n"
 		"\t-n (--operations): think time operations to perform (def: 1)\n"
 		"\t-a (--auto): grow thread count until latencies hurt (def: off)\n"
-		"\t-j (--jitter): add jitter to sleep/cputimes (def: off)\n"
 		"\t-A (--auto-rps): grow RPS until cpu utilization hits target (def: none)\n"
 		"\t-p (--pipe): transfer size bytes to simulate a pipe test (def: 0)\n"
 		"\t-R (--rps): requests per second mode (count, def: 0)\n"
@@ -158,8 +157,8 @@ static void parse_options(int ac, char **av)
 			autobench = 1;
 			warmuptime = 0;
 			break;
-		case 'j':
-			jitter = 1;
+		case 'C':
+			calibrate_only = 1;
 			break;
 		case 'A':
 			auto_rps = atoi(optarg);
@@ -811,8 +810,7 @@ float read_busy(int fd, char *buf, int len,
 /*
  * once the message thread starts all his children, this is where he
  * loops until our runtime is up.  Basically this sits around waiting
- * for posting by the worker threads, replying to their messages after
- * a delay of 'sleeptime' + some jitter.
+ * for posting by the worker threads, and replying to their messages.
  */
 static void run_msg_thread(struct thread_data *td)
 {
@@ -904,8 +902,7 @@ void auto_scale_rps(int *proc_stat_fd,
 /*
  * once the message thread starts all his children, this is where he
  * loops until our runtime is up.  Basically this sits around waiting
- * for posting by the worker threads, replying to their messages after
- * a delay of 'sleeptime' + some jitter.
+ * for posting by the worker threads, replying to their messages.
  */
 static void run_rps_thread(struct thread_data *worker_threads_mem)
 {
@@ -1029,12 +1026,9 @@ void *worker_thread(void *arg)
 			gettimeofday(&work_start, NULL);
 
 			do_work(td);
-			usleep(10);
-
-			do_work(td);
-			usleep(10);
 
 			gettimeofday(&now, NULL);
+
 			td->runtime = tvdelta(&start, &now);
 			if (req) {
 				tmp = req->next;
@@ -1350,7 +1344,8 @@ again:
 
 	}
 	if (!auto_rps)
-		fprintf(stdout, "average rps: %.2f\n", (double)(loop_count) / runtime);
+		fprintf(stdout, "average rps: %.2f\n",
+			(double)(loop_count) / runtime);
 
 	return 0;
 }
