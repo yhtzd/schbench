@@ -21,6 +21,7 @@
 #include <math.h>
 #include <linux/futex.h>
 #include <sys/syscall.h>
+#include <sys/sysinfo.h>
 
 #define PLAT_BITS	8
 #define PLAT_VAL	(1 << PLAT_BITS)
@@ -34,9 +35,9 @@
 #define USEC_PER_SEC (1000000)
 
 /* -m number of message threads */
-static int message_threads = 2;
+static int message_threads = 1;
 /* -t  number of workers per message thread */
-static int worker_threads = 16;
+static int worker_threads = 0;
 /* -r  seconds */
 static int runtime = 30;
 /* -w  seconds */
@@ -46,9 +47,9 @@ static int intervaltime = 10;
 /* -z  seconds */
 static int zerotime = 0;
 /* -f  cache_footprint_kb */
-static unsigned long cache_footprint_kb = 1536;
+static unsigned long cache_footprint_kb = 256;
 /* -n  operations */
-static unsigned long operations = 1;
+static unsigned long operations = 5;
 /* -a, bool */
 static int autobench = 0;
 /* -A, int percentage busy */
@@ -122,11 +123,11 @@ static void print_usage(void)
 {
 	fprintf(stderr, "schbench usage:\n"
 		"\t-C (--calibrate): run our work loop and report on timing\n"
-		"\t-m (--message-threads): number of message threads (def: 2)\n"
-		"\t-t (--threads): worker threads per message thread (def: 16)\n"
+		"\t-m (--message-threads): number of message threads (def: 1)\n"
+		"\t-t (--threads): worker threads per message thread (def: num_cpus)\n"
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
-		"\t-F (--cache_footprint): cache footprint (kb, def: 6144)\n"
-		"\t-n (--operations): think time operations to perform (def: 1)\n"
+		"\t-F (--cache_footprint): cache footprint (kb, def: 256)\n"
+		"\t-n (--operations): think time operations to perform (def: 5)\n"
 		"\t-a (--auto): grow thread count until latencies hurt (def: off)\n"
 		"\t-A (--auto-rps): grow RPS until cpu utilization hits target (def: none)\n"
 		"\t-p (--pipe): transfer size bytes to simulate a pipe test (def: 0)\n"
@@ -1266,6 +1267,11 @@ int main(int ac, char **av)
 	unsigned long long loop_runtime;
 
 	parse_options(ac, av);
+
+	if (worker_threads == 0) {
+		worker_threads = get_nprocs();
+		fprintf(stderr, "setting worker threads to %d\n", worker_threads);
+	}
 
 	matrix_size = sqrt(cache_footprint_kb * 1024 / 3 / sizeof(unsigned long));
 
