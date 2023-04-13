@@ -1028,23 +1028,26 @@ void *worker_thread(void *arg)
 		do {
 			struct request *tmp;
 
-			if (calibrate_only) {
-				/*
-				 * in calibration mode, don't include the
-				 * usleep in the timing
-				 */
-				usleep(100);
+			if (pipe_test) {
 				gettimeofday(&work_start, NULL);
 			} else {
-				/*
-				 * lets start off with some simulated networking,
-				 * and also make sure we get a fresh clean timeslice
-				 */
-				gettimeofday(&work_start, NULL);
-				usleep(100);
+				if (calibrate_only) {
+					/*
+					 * in calibration mode, don't include the
+					 * usleep in the timing
+					 */
+					usleep(100);
+					gettimeofday(&work_start, NULL);
+				} else {
+					/*
+					 * lets start off with some simulated networking,
+					 * and also make sure we get a fresh clean timeslice
+					 */
+					gettimeofday(&work_start, NULL);
+					usleep(100);
+				}
+				do_work(td);
 			}
-
-			do_work(td);
 
 			gettimeofday(&now, NULL);
 
@@ -1356,24 +1359,28 @@ int main(int ac, char **av)
 
 	free(message_threads_mem);
 
-	show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
-		       PLIST_FOR_LAT, PLIST_99);
-	show_latencies(&request_stats, "Request Latencies", "usec", runtime,
-		       PLIST_FOR_LAT, PLIST_99);
-	show_latencies(&rps_stats, "RPS", "requests", runtime,
-		       PLIST_FOR_RPS, PLIST_50);
-
 	if (pipe_test) {
 		char *pretty;
 		double mb_per_sec;
+
+		show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
+			       PLIST_20 | PLIST_FOR_LAT, PLIST_99);
+
 		mb_per_sec = (loop_count * pipe_test * USEC_PER_SEC) / loop_runtime;
 		mb_per_sec = pretty_size(mb_per_sec, &pretty);
 		printf("avg worker transfer: %.2f ops/sec %.2f%s/s\n",
 		       loops_per_sec, mb_per_sec, pretty);
-
+	} else {
+		show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
+			       PLIST_FOR_LAT, PLIST_99);
+		show_latencies(&request_stats, "Request Latencies", "usec", runtime,
+			       PLIST_FOR_LAT, PLIST_99);
+		show_latencies(&rps_stats, "RPS", "requests", runtime,
+			       PLIST_FOR_RPS, PLIST_50);
+		if (!auto_rps)
+			fprintf(stdout, "average rps: %.2f\n",
+				(double)(loop_count) / runtime);
 	}
-	if (!auto_rps)
-		fprintf(stdout, "average rps: %.2f\n",
-			(double)(loop_count) / runtime);
+
 	return 0;
 }
