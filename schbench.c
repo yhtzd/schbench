@@ -50,8 +50,6 @@ static int zerotime = 0;
 static unsigned long cache_footprint_kb = 256;
 /* -n  operations */
 static unsigned long operations = 5;
-/* -a, bool */
-static int autobench = 0;
 /* -A, int percentage busy */
 static int auto_rps = 0;
 static int auto_rps_target_hit = 0;
@@ -107,9 +105,8 @@ enum {
 	HELP_LONG_OPT = 1,
 };
 
-char *option_string = "p:am:t:Cr:R:w:i:z:A:n:F:";
+char *option_string = "p:m:t:Cr:R:w:i:z:A:n:F:";
 static struct option long_options[] = {
-	{"auto", no_argument, 0, 'a'},
 	{"pipe", required_argument, 0, 'p'},
 	{"message-threads", required_argument, 0, 'm'},
 	{"threads", required_argument, 0, 't'},
@@ -135,7 +132,6 @@ static void print_usage(void)
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
 		"\t-F (--cache_footprint): cache footprint (kb, def: 256)\n"
 		"\t-n (--operations): think time operations to perform (def: 5)\n"
-		"\t-a (--auto): grow thread count until latencies hurt (def: off)\n"
 		"\t-A (--auto-rps): grow RPS until cpu utilization hits target (def: none)\n"
 		"\t-p (--pipe): transfer size bytes to simulate a pipe test (def: 0)\n"
 		"\t-R (--rps): requests per second mode (count, def: 0)\n"
@@ -161,10 +157,6 @@ static void parse_options(int ac, char **av)
 			break;
 
 		switch(c) {
-		case 'a':
-			autobench = 1;
-			warmuptime = 0;
-			break;
 		case 'C':
 			calibrate_only = 1;
 			break;
@@ -381,21 +373,6 @@ static unsigned int calc_percentiles(unsigned int *io_u_plat, unsigned long nr,
 	*output = ovals;
 	*output_counts = ocounts;
 	return len;
-}
-
-static void calc_p99(struct stats *s, int *p99)
-{
-	unsigned int *ovals = NULL;
-	unsigned long *ocounts = NULL;
-	int len;
-
-	len = calc_percentiles(s->plat, s->nr_samples, &ovals, &ocounts);
-	if (len && len > PLIST_99_INDEX)
-		*p99 = ovals[PLIST_99_INDEX];
-	if (ovals)
-		free(ovals);
-	if (ocounts)
-		free(ocounts);
 }
 
 static void show_latencies(struct stats *s, char *label, char *units,
@@ -1332,7 +1309,6 @@ int main(int ac, char **av)
 		}
 	}
 
-again:
 	requests_per_sec /= message_threads;
 	loops_per_sec = 0;
 	stopping = 0;
@@ -1380,16 +1356,6 @@ again:
 
 	free(message_threads_mem);
 
-	if (autobench) {
-		int p99 = 0;
-		calc_p99(&wakeup_stats, &p99);
-		fprintf(stdout, "threads %d p99 %d\n",
-			worker_threads, p99);
-		if (p99 < 2000) {
-			worker_threads++;
-			goto again;
-		}
-	}
 	show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
 		       PLIST_FOR_LAT, PLIST_99);
 	show_latencies(&request_stats, "Request Latencies", "usec", runtime,
