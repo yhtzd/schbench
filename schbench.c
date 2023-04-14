@@ -59,6 +59,8 @@ static int pipe_test = 0;
 static int requests_per_sec = 0;
 /* -C bool for calibration mode */
 static int calibrate_only = 0;
+/* -L bool no locking during CPU work */
+static int skip_locking = 0;
 
 /* the message threads flip this to true when they decide runtime is up */
 static volatile unsigned long stopping = 0;
@@ -105,7 +107,7 @@ enum {
 	HELP_LONG_OPT = 1,
 };
 
-char *option_string = "p:m:t:Cr:R:w:i:z:A:n:F:";
+char *option_string = "p:m:t:Cr:R:w:i:z:A:n:F:L";
 static struct option long_options[] = {
 	{"pipe", required_argument, 0, 'p'},
 	{"message-threads", required_argument, 0, 'm'},
@@ -115,6 +117,7 @@ static struct option long_options[] = {
 	{"auto-rps", required_argument, 0, 'A'},
 	{"cache_footprint", required_argument, 0, 'f'},
 	{"calibrate", no_argument, 0, 'C'},
+	{"no-locking", no_argument, 0, 'L'},
 	{"operations", required_argument, 0, 'n'},
 	{"warmuptime", required_argument, 0, 'w'},
 	{"intervaltime", required_argument, 0, 'i'},
@@ -127,6 +130,7 @@ static void print_usage(void)
 {
 	fprintf(stderr, "schbench usage:\n"
 		"\t-C (--calibrate): run our work loop and report on timing\n"
+		"\t-L (--no-locking): don't spinlock during CPU work (def: locking on)\n"
 		"\t-m (--message-threads): number of message threads (def: 1)\n"
 		"\t-t (--threads): worker threads per message thread (def: num_cpus)\n"
 		"\t-r (--runtime): How long to run before exiting (seconds, def: 30)\n"
@@ -159,6 +163,9 @@ static void parse_options(int ac, char **av)
 		switch(c) {
 		case 'C':
 			calibrate_only = 1;
+			break;
+		case 'L':
+			skip_locking = 1;
 			break;
 		case 'A':
 			auto_rps = atoi(optarg);
@@ -995,11 +1002,11 @@ static void do_work(struct thread_data *td)
 	pthread_mutex_t *lock = NULL;
 	unsigned long i;
 
-	if (!calibrate_only)
+	if (!(calibrate_only || skip_locking))
 		lock = lock_this_cpu();
 	for (i = 0; i < operations; i++)
 		do_some_math(td);
-	if (!calibrate_only)
+	if (!(calibrate_only || skip_locking))
 		pthread_mutex_unlock(lock);
 }
 
