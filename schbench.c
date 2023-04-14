@@ -225,6 +225,9 @@ static void parse_options(int ac, char **av)
 	if (found_warmuptime >= 0)
 		warmuptime = found_warmuptime;
 
+	if (calibrate_only)
+		skip_locking = 1;
+
 	if (optind < ac) {
 		fprintf(stderr, "Error Extra arguments '%s'\n", av[optind]);
 		exit(1);
@@ -981,8 +984,12 @@ static void do_some_math(struct thread_data *thread_data)
 
 static pthread_mutex_t *lock_this_cpu(void)
 {
-	int cpu = sched_getcpu();
+	int cpu;
+	int cur_cpu;
 	pthread_mutex_t *lock;
+
+again:
+	cpu = sched_getcpu();
 	if (cpu < 0) {
 		perror("sched_getcpu failed\n");
 		exit(1);
@@ -990,6 +997,18 @@ static pthread_mutex_t *lock_this_cpu(void)
 	lock = &per_cpu_locks[cpu].lock;
 	while (pthread_mutex_trylock(lock) != 0)
 		nop;
+
+	cur_cpu = sched_getcpu();
+	if (cur_cpu < 0) {
+		perror("sched_getcpu failed\n");
+		exit(1);
+	}
+
+	if (cur_cpu != cpu) {
+		/* we got the lock but we migrated */
+		pthread_mutex_unlock(lock);
+		goto again;
+	}
 	return lock;
 
 }
@@ -1002,11 +1021,12 @@ static void do_work(struct thread_data *td)
 	pthread_mutex_t *lock = NULL;
 	unsigned long i;
 
-	if (!(calibrate_only || skip_locking))
+	/* using --calibrate or --no-locking skips the locks */
+	if (!skip_locking)
 		lock = lock_this_cpu();
 	for (i = 0; i < operations; i++)
 		do_some_math(td);
-	if (!(calibrate_only || skip_locking))
+	if (!skip_locking)
 		pthread_mutex_unlock(lock);
 }
 
