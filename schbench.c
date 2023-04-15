@@ -228,6 +228,9 @@ static void parse_options(int ac, char **av)
 	if (calibrate_only)
 		skip_locking = 1;
 
+	if (runtime < 30)
+		warmuptime = 0;
+
 	if (optind < ac) {
 		fprintf(stderr, "Error Extra arguments '%s'\n", av[optind]);
 		exit(1);
@@ -1230,19 +1233,19 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	int proc_stat_fd = -1;
 	unsigned long long total_time = 0;
 	unsigned long long total_idle = 0;
-
+	int done = 0;
 
 	memset(&wakeup_stats, 0, sizeof(wakeup_stats));
 	gettimeofday(&start, NULL);
 	last_calc = start;
 	zero_time = start;
 
-	while(1) {
+	while(!done) {
 		gettimeofday(&now, NULL);
 		runtime_delta = tvdelta(&start, &now);
 
 		if (runtime_usec && runtime_delta >= runtime_usec)
-			break;
+			done = 1;
 
 		if (!requests_per_sec && !pipe_test &&
 		    runtime_delta > warmup_usec &&
@@ -1294,7 +1297,8 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 		}
 		if (auto_rps)
 			auto_scale_rps(&proc_stat_fd, &total_time, &total_idle);
-		sleep(1);
+		if (!done)
+			sleep(1);
 	}
 	if (proc_stat_fd >= 0)
 		close(proc_stat_fd);
