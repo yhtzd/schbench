@@ -1283,7 +1283,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 						       "requests", runtime_delta / USEC_PER_SEC,
 						       PLIST_FOR_RPS, PLIST_50);
 				}
-				fprintf(stdout, "current rps: %.2f\n", rps);
+				fprintf(stderr, "current rps: %.2f\n", rps);
 				total_intervals++;
 			}
 		}
@@ -1399,7 +1399,7 @@ int main(int ac, char **av)
 
 		mb_per_sec = (loop_count * pipe_test * USEC_PER_SEC) / loop_runtime;
 		mb_per_sec = pretty_size(mb_per_sec, &pretty);
-		printf("avg worker transfer: %.2f ops/sec %.2f%s/s\n",
+		fprintf(stderr, "avg worker transfer: %.2f ops/sec %.2f%s/s\n",
 		       loops_per_sec, mb_per_sec, pretty);
 	} else {
 		show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
@@ -1409,7 +1409,7 @@ int main(int ac, char **av)
 		show_latencies(&rps_stats, "RPS", "requests", runtime,
 			       PLIST_FOR_RPS, PLIST_50);
 		if (!auto_rps)
-			fprintf(stdout, "average rps: %.2f\n",
+			fprintf(stderr, "average rps: %.2f\n",
 				(double)(loop_count) / runtime);
 	}
 
