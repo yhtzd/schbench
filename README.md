@@ -1,34 +1,50 @@
 
 # Motivations
 
-schbench is meant to reproduce the scheduler characteristics of our production web workload with a relatively simple benchmark.  It's really targeting three things:
+schbench is meant to reproduce the scheduler characteristics of our production
+web workload with a relatively simple benchmark.  It's really targeting three
+things:
 
-- Saturate all the CPUs on the system.  Leaving idle CPUs behind will result in lower RPS.
--  Long timeslices.  Involuntary context switches will result in lower RPS.
--  Low scheduling delays.  Higher wakeup latencies will result in lower RPS.
+- Saturate all the CPUs on the system.  Leaving idle CPUs behind will result in
+  lower RPS.
+- Long timeslices.  Involuntary context switches will result in lower RPS.
+- Low scheduling delays.  Higher wakeup latencies will result in lower RPS.
 
 # Methodology
 
-schbench uses messaging threads and worker threads.  Workers perform an artificial 
-request comprised of two usleeps (simulating network/disk/locking) and some matrix math.  Messaging threads just queue up the work and wait for results.
+schbench uses messaging threads and worker threads.  Workers perform an
+artificial request comprised of two usleeps (simulating network/disk/locking)
+and some matrix math.  Messaging threads just queue up the work and wait for
+results.
 
 Results are recorded for three primary metrics:
 
-- Wakeup latency: messaging threads record the time a worker is posted, and workers compare this with the time when they start running.
+- Wakeup latency: messaging threads record the time a worker is posted, and
+  workers compare this with the time when they start running.
 - Request latency: time required to complete our fake request.
-- Requests per second: total number of requests all the threads are able to complete.
+- Requests per second: total number of requests all the threads are able to
+  complete.
 
 ## Penalizing preemption
 
-The workload we're simulating has a complex set of interactions between CPU, memory, and network/disk IO.  Instead of trying to reproduce all of that, schbench just makes preemption expensive.   A per-cpu spinlock that is taken while performing our matrix math, and is released whenever the math is done.
+The workload we're simulating has a complex set of interactions between CPU,
+memory, and network/disk IO.  Instead of trying to reproduce all of that,
+schbench just makes preemption expensive.   A per-cpu spinlock that is taken
+while performing our matrix math, and is released whenever the math is done.
 
-If the thread is moved to another CPU in the middle of the critical section, whoever tries to take the per-cpu lock next will have to wait until calculations are finished.
+If the thread is moved to another CPU in the middle of the critical section,
+whoever tries to take the per-cpu lock next will have to wait until
+calculations are finished.
 
-This isn't a great model for multi-threaded programming, and it can be turned off with (-L / --no-locking), but it seems to be the most accurate way to match what we're seeing in the real world.
+This isn't a great model for multi-threaded programming, and it can be turned
+off with (-L / --no-locking), but it seems to be the most accurate way to match
+what we're seeing in the real world.
 
 ## Calibration
 
-If the matrix math portion of a request is longer than our timeslice, the resulting contention will impact performance.  Two different command line options control how long the matrix math will take:
+If the matrix math portion of a request is longer than our timeslice, the
+resulting contention will impact performance.  Two different command line
+options control how long the matrix math will take:
 
 -F (--cache_footprint): cache footprint (kb, def: 256)
 -n (--operations): think time operations to perform (def: 5)
@@ -37,7 +53,11 @@ Another important option is:
 
 -C (--calibrate): run our work loop and report on timing
 
-In this mode, no spinlocks are taken, and the request latency times are based entirely on the matrix math (no usleeps are counted).  You can use these three options to match the work to your desired timeslice.  The goal is to get the p99 of your request latency in calibration mode just under the desired timeslice.
+In this mode, no spinlocks are taken, and the request latency times are based
+entirely on the matrix math (no usleeps are counted).  You can use these three
+options to match the work to your desired timeslice.  The goal is to get the
+p99 of your request latency in calibration mode just under the desired
+timeslice.
 
 # Example runs
 ## Calibration run
@@ -70,7 +90,9 @@ average rps: 3024.60
 
 ## Max loading all the CPUs
 
-This does a 90 second run using the parameters above.  The request latencies are a little higher because they do include the time spent on usleeps when not in calibration mode.
+This does a 90 second run using the parameters above.  The request latencies
+are a little higher because they do include the time spent on usleeps when not
+in calibration mode.
 ```
 ./schbench -F 256 -n 5 -r 90
 ...
@@ -96,7 +118,8 @@ average rps: 3009.10
 
 ## Pipe mode
 
-Pipe mode uses futexes and shared memory instead of pipes, but the underlying idea is similar to perf bench.  Wakeup latencies are recorded.
+Pipe mode uses futexes and shared memory instead of pipes, but the underlying
+idea is similar to perf bench.  Wakeup latencies are recorded.
 
 ```
  ./schbench -p 65536 -t 4
