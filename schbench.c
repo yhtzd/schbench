@@ -41,7 +41,7 @@ static int worker_threads = 0;
 /* -r  seconds */
 static int runtime = 30;
 /* -w  seconds */
-static int warmuptime = 5;
+static int warmuptime = 0;
 /* -i  seconds */
 static int intervaltime = 10;
 /* -z  seconds */
@@ -139,7 +139,7 @@ static void print_usage(void)
 		"\t-A (--auto-rps): grow RPS until cpu utilization hits target (def: none)\n"
 		"\t-p (--pipe): transfer size bytes to simulate a pipe test (def: 0)\n"
 		"\t-R (--rps): requests per second mode (count, def: 0)\n"
-		"\t-w (--warmuptime): how long to warmup before resettings stats (seconds, def: 5)\n"
+		"\t-w (--warmuptime): how long to warmup before resetting stats (seconds, def: 0)\n"
 		"\t-i (--intervaltime): interval for printing latencies (seconds, def: 10)\n"
 		"\t-z (--zerotime): interval for zeroing latencies (seconds, def: never)\n"
 	       );
