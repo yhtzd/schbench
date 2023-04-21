@@ -1165,6 +1165,29 @@ static double pretty_size(double number, char **str)
 	return number;
 }
 
+/*
+ * we want to calculate RPS more often than the full message stats,
+ * so this is a less expensive walk through all the message threads
+ * to pull that out
+ */
+static void combine_message_thread_rps(struct thread_data *thread_data,
+				       unsigned long long *loop_count)
+{
+	struct thread_data *worker;
+	int i;
+	int msg_i;
+	int index = 0;
+
+	*loop_count = 0;
+	for (msg_i = 0; msg_i < message_threads; msg_i++) {
+		index++;
+		for (i = 0; i < worker_threads; i++) {
+			worker = thread_data + index++;
+			*loop_count += worker->loop_count;
+		}
+	}
+}
+
 static void combine_message_thread_stats(struct stats *wakeup_stats,
 					 struct stats *request_stats,
 					struct thread_data *thread_data,
@@ -1214,6 +1237,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	struct timeval now;
 	struct timeval zero_time;
 	struct timeval last_calc;
+	struct timeval last_rps_calc;
 	struct timeval start;
 	struct stats wakeup_stats;
 	struct stats request_stats;
@@ -1238,6 +1262,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 	memset(&wakeup_stats, 0, sizeof(wakeup_stats));
 	gettimeofday(&start, NULL);
 	last_calc = start;
+	last_rps_calc = start;
 	zero_time = start;
 
 	while(!done) {
@@ -1255,9 +1280,21 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 			zero_time = now;
 			reset_thread_stats(message_threads_mem);
 		} else if (!pipe_test) {
+			double rps;
+
+			/* count our RPS every round */
+			delta = tvdelta(&last_rps_calc, &now);
+
+			combine_message_thread_rps(message_threads_mem, &loop_count);
+			rps = (double)((loop_count - last_loop_count) * USEC_PER_SEC) / delta;
+			last_loop_count = loop_count;
+			last_rps_calc = now;
+
+			if (!auto_rps || auto_rps_target_hit)
+				add_lat(&rps_stats, rps);
+
 			delta = tvdelta(&last_calc, &now);
 			if (delta >= interval_usec) {
-				double rps;
 
 				memset(&wakeup_stats, 0, sizeof(wakeup_stats));
 				memset(&request_stats, 0, sizeof(request_stats));
@@ -1266,23 +1303,15 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 					     &loop_count, &loop_runtime);
 				last_calc = now;
 
-				rps = (double)((loop_count - last_loop_count) * USEC_PER_SEC) / delta;
-				last_loop_count = loop_count;
-
-				if (!auto_rps || auto_rps_target_hit)
-					add_lat(&rps_stats, rps);
-
 				show_latencies(&wakeup_stats, "Wakeup Latencies",
 					       "usec", runtime_delta / USEC_PER_SEC,
 					       PLIST_FOR_LAT, PLIST_99);
 				show_latencies(&request_stats, "Request Latencies",
 					       "usec", runtime_delta / USEC_PER_SEC,
 					       PLIST_FOR_LAT, PLIST_99);
-				if (total_intervals > 10) {
-					show_latencies(&rps_stats, "RPS",
-						       "requests", runtime_delta / USEC_PER_SEC,
-						       PLIST_FOR_RPS, PLIST_50);
-				}
+				show_latencies(&rps_stats, "RPS",
+					       "requests", runtime_delta / USEC_PER_SEC,
+					       PLIST_FOR_RPS, PLIST_50);
 				fprintf(stderr, "current rps: %.2f\n", rps);
 				total_intervals++;
 			}
