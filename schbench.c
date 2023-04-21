@@ -1350,7 +1350,10 @@ int main(int ac, char **av)
 	parse_options(ac, av);
 
 	if (worker_threads == 0) {
-		worker_threads = get_nprocs();
+		unsigned long num_cpus = get_nprocs();
+
+		worker_threads = (num_cpus + message_threads - 1) / message_threads;
+
 		fprintf(stderr, "setting worker threads to %d\n", worker_threads);
 	}
 
