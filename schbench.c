@@ -22,6 +22,20 @@
 #include <linux/futex.h>
 #include <sys/syscall.h>
 
+#ifdef SKYLOFT
+#include <skyloft/uapi/pthread.h>
+#include <skyloft/uapi/task.h>
+#define pthread_create sl_pthread_create
+#define pthread_join sl_pthread_join
+#define pthread_exit sl_pthread_exit
+#define sleep sl_sleep
+#define usleep sl_usleep
+#define futex sl_futex
+#else
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#endif
+
 #define PLAT_BITS	8
 #define PLAT_VAL	(1 << PLAT_BITS)
 #define PLAT_GROUP_NR	19
@@ -501,6 +515,7 @@ struct thread_data {
 
 	/* keep the futex and the wake_time in the same cacheline */
 	int futex;
+	int id;
 
 	/* mr axboe's magic latency histogram */
 	struct stats stats;
@@ -518,11 +533,13 @@ struct thread_data {
 #define FUTEX_BLOCKED 0
 #define FUTEX_RUNNING 1
 
+#ifndef SKYLOFT
 static int futex(int *uaddr, int futex_op, int val,
 		 const struct timespec *timeout, int *uaddr2, int val3)
 {
 	return syscall(SYS_futex, uaddr, futex_op, val, timeout, uaddr2, val3);
 }
+#endif
 
 /*
  * wakeup a process waiting on a futex, making sure they are really waiting
@@ -877,11 +894,11 @@ static void run_msg_thread(struct thread_data *td)
 		 * messages shouldn't be instant, sleep a little to make them
 		 * wait
 		 */
-		usec_spin(message_cputime);
-		if (!pipe_test && sleeptime) {
-			jitter = rand_r(&seed) % max_jitter;
-			usleep(sleeptime + jitter);
-		}
+		// usec_spin(message_cputime);
+		// if (!pipe_test && sleeptime) {
+		// 	jitter = rand_r(&seed) % max_jitter;
+		// 	usleep(sleeptime + jitter);
+		// }
 	}
 }
 
@@ -1047,7 +1064,7 @@ static void do_work(struct thread_data *td)
 		for (i = 0; i < operations; i++)
 			do_some_math(td);
 	} else {
-		usec_spin(cputime);
+		// usec_spin(cputime);
 	}
 }
 
@@ -1062,6 +1079,8 @@ void *worker_thread(void *arg)
 	struct timeval start;
 	unsigned long long delta;
 	struct request *req = NULL;
+
+	printf("worker_thread %d\n", td->id);
 
 	gettimeofday(&start, NULL);
 	while(1) {
@@ -1094,6 +1113,7 @@ void *worker_thread(void *arg)
 		if (!requests_per_sec) {
 			gettimeofday(&now, NULL);
 			delta = tvdelta(&td->wake_time, &now);
+			// printf("req %d %llu\n",td->id, delta);
 			if (delta > 0)
 				add_lat(&td->stats, delta);
 		}
@@ -1135,6 +1155,7 @@ void *message_thread(void *arg)
 		}
 
 		worker_threads_mem[i].msg_thread = td;
+		worker_threads_mem[i].id = td->id * 1000 + i;
 		ret = pthread_create(&tid, NULL, worker_thread,
 				     worker_threads_mem + i);
 		if (ret) {
@@ -1191,6 +1212,7 @@ static void combine_message_thread_stats(struct stats *stats,
 			combine_stats(stats, &worker->stats);
 			*loop_count += worker->loop_count;
 			*loop_runtime += worker->runtime;
+			// printf("(%d,%d) %lld %lld\n", msg_i, i, worker->loop_count, worker->runtime);
 		}
 	}
 }
@@ -1262,7 +1284,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 					     &loop_count, &loop_runtime);
 				show_latencies(&stats, runtime_delta / USEC_PER_SEC);
 				last_calc = now;
-				if (requests_per_sec) {
+				if (requests_per_sec || 1) {
 					fprintf(stdout, "rps: %.2f\n",
 						(double)(loop_count * USEC_PER_SEC) / runtime_delta);
 				}
@@ -1305,6 +1327,9 @@ int main(int ac, char **av)
 	if (operations)
 		matrix_size = sqrt(cache_footprint_kb * 1024 / 3 / sizeof(unsigned long));
 
+	printf("message_threads %d\n", message_threads);
+	printf("worker_threads %d\n", worker_threads);
+
 again:
 	requests_per_sec /= message_threads;
 	loops_per_sec = 0;
@@ -1324,6 +1349,7 @@ again:
 	for (i = 0; i < message_threads; i++) {
 		pthread_t tid;
 		int index = i * worker_threads + i;
+		message_threads_mem[index].id = i;
 		ret = pthread_create(&tid, NULL, message_thread,
 				     message_threads_mem + index);
 		if (ret) {
@@ -1371,7 +1397,7 @@ again:
 		       loops_per_sec, mb_per_sec, pretty);
 
 	}
-	if (requests_per_sec) {
+	if (requests_per_sec || 1) {
 		diff = (double)p99 / cputime;
 		fprintf(stdout, "rps: %.2f p95 (usec) %d p99 (usec) %d p95/cputime %.2f%% p99/cputime %.2f%%\n",
 				(double)(loop_count) / runtime, p95, p99, ((double)p95 / cputime) * 100,
