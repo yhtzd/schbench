@@ -19,9 +19,26 @@
 #include <time.h>
 #include <string.h>
 #include <math.h>
-#include <linux/futex.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
+
+#ifdef SKYLOFT
+#include <skyloft/uapi/pthread.h>
+#include <skyloft/uapi/task.h>
+#define pthread_create sl_pthread_create
+#define pthread_join sl_pthread_join
+#define pthread_exit sl_pthread_exit
+#define pthread_mutex_init sl_pthread_mutex_init
+#define pthread_mutex_trylock sl_pthread_mutex_trylock
+#define pthread_mutex_unlock sl_pthread_mutex_unlock
+#define sleep sl_sleep
+#define usleep sl_usleep
+#define futex sl_futex
+#define sched_getcpu sl_current_cpu_id
+#else
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#endif
 
 #define PLAT_BITS	8
 #define PLAT_VAL	(1 << PLAT_BITS)
@@ -474,6 +491,7 @@ struct thread_data {
 
 	/* keep the futex and the wake_time in the same cacheline */
 	int futex;
+	int id;
 
 	/* mr axboe's magic latency histogram */
 	struct stats wakeup_stats;
@@ -492,11 +510,13 @@ struct thread_data {
 #define FUTEX_BLOCKED 0
 #define FUTEX_RUNNING 1
 
+#ifndef SKYLOFT
 static int futex(int *uaddr, int futex_op, int val,
 		 const struct timespec *timeout, int *uaddr2, int val3)
 {
 	return syscall(SYS_futex, uaddr, futex_op, val, timeout, uaddr2, val3);
 }
+#endif
 
 /*
  * wakeup a process waiting on a futex, making sure they are really waiting
@@ -1046,6 +1066,8 @@ void *worker_thread(void *arg)
 	unsigned long long delta;
 	struct request *req = NULL;
 
+	printf("worker_thread %d\n", td->id);
+
 	gettimeofday(&start, NULL);
 	while(1) {
 		if (stopping)
@@ -1128,6 +1150,7 @@ void *message_thread(void *arg)
 		}
 
 		worker_threads_mem[i].msg_thread = td;
+		worker_threads_mem[i].id = td->id * 1000 + i;
 		ret = pthread_create(&tid, NULL, worker_thread,
 				     worker_threads_mem + i);
 		if (ret) {
@@ -1209,6 +1232,7 @@ static void combine_message_thread_stats(struct stats *wakeup_stats,
 			combine_stats(request_stats, &worker->request_stats);
 			*loop_count += worker->loop_count;
 			*loop_runtime += worker->runtime;
+			// printf("(%d,%d) %lld %lld\n", msg_i, i, worker->loop_count, worker->runtime);
 		}
 	}
 }
@@ -1375,6 +1399,11 @@ int main(int ac, char **av)
 		}
 	}
 
+	printf("message_threads %d\n", message_threads);
+	printf("worker_threads %d\n", worker_threads);
+	printf("operations %ld\n", operations);
+	printf("matrix_size %ld\n", matrix_size);
+
 	requests_per_sec /= message_threads;
 	loops_per_sec = 0;
 	stopping = 0;
@@ -1395,6 +1424,7 @@ int main(int ac, char **av)
 	for (i = 0; i < message_threads; i++) {
 		pthread_t tid;
 		int index = i * worker_threads + i;
+		message_threads_mem[index].id = i;
 		ret = pthread_create(&tid, NULL, message_thread,
 				     message_threads_mem + index);
 		if (ret) {
