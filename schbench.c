@@ -119,6 +119,7 @@ struct stats rps_stats;
 #define PLIST_FOR_RPS (PLIST_20 | PLIST_50 | PLIST_90)
 
 static double plist[PLAT_LIST_MAX] = { 20.0, 50.0, 90.0, 99.0, 99.9 };
+static char* plist_str[PLAT_LIST_MAX] = { "20.0", "50.0", "90.0", "99.0", "99.9" };
 
 enum {
 	HELP_LONG_OPT = 1,
@@ -421,9 +422,9 @@ static void show_latencies(struct stats *s, char *label, char *units,
 			unsigned long bit = 1 << i;
 			if (!(mask & bit))
 				continue;
-			fprintf(stderr, "\t%s%2.1fth: %-10u (%lu samples)\n",
+			fprintf(stderr, "\t%s%2sth: %-10u (%lu samples)\n",
 				bit == star ? "* " : "  ",
-				plist[i], ovals[i], ocounts[i]);
+				plist_str[i], ovals[i], ocounts[i]);
 		}
 	}
 
@@ -743,6 +744,7 @@ static struct request *msg_and_wait(struct thread_data *td)
 	return NULL;
 }
 
+#if 0
 /*
  * read /proc/stat, return the percentage of non-idle time since
  * the last read.
@@ -814,6 +816,7 @@ float read_busy(int fd, char *buf, int len,
 
 	return 100.00 - ((float)delta_idle/(float)delta) * 100.00;
 }
+#endif
 
 #if defined(__x86_64__) || defined(__i386__)
 #define nop __asm__ __volatile__("rep;nop": : :"memory")
@@ -844,6 +847,7 @@ static void run_msg_thread(struct thread_data *td)
 	}
 }
 
+#if 0
 void auto_scale_rps(int *proc_stat_fd,
 		    unsigned long long *total_time,
 		    unsigned long long *total_idle)
@@ -980,11 +984,12 @@ static void run_rps_thread(struct thread_data *worker_threads_mem)
 	if (auto_rps)
 		fprintf(stderr, "final rps goal was %d\n", requests_per_sec);
 }
+#endif
 
 /*
  * multiply two matrices in a naive way to emulate some cache footprint
  */
-static void do_some_math(struct thread_data *thread_data)
+void do_some_math(struct thread_data *thread_data)
 {
 	unsigned long i, j, k;
 	unsigned long *m1, *m2, *m3;
@@ -1044,13 +1049,18 @@ static void do_work(struct thread_data *td)
 	pthread_mutex_t *lock = NULL;
 	unsigned long i;
 
-	/* using --calibrate or --no-locking skips the locks */
-	if (!skip_locking)
-		lock = lock_this_cpu();
+	// int us = 30000;
+	// long long count = 2000ll * us;
+	// while (count--)
+	// 	asm volatile("nop");
+
+	// /* using --calibrate or --no-locking skips the locks */
+	// if (!skip_locking)
+	// 	lock = lock_this_cpu();
 	for (i = 0; i < operations; i++)
 		do_some_math(td);
-	if (!skip_locking)
-		pthread_mutex_unlock(lock);
+	// if (!skip_locking)
+	// 	pthread_mutex_unlock(lock);
 }
 
 /*
@@ -1065,8 +1075,6 @@ void *worker_thread(void *arg)
 	struct timeval start;
 	unsigned long long delta;
 	struct request *req = NULL;
-
-	printf("worker_thread %d\n", td->id);
 
 	gettimeofday(&start, NULL);
 	while(1) {
@@ -1160,10 +1168,10 @@ void *message_thread(void *arg)
 		worker_threads_mem[i].tid = tid;
 	}
 
-	if (requests_per_sec)
-		run_rps_thread(worker_threads_mem);
-	else
-		run_msg_thread(td);
+	// if (requests_per_sec)
+	// 	run_rps_thread(worker_threads_mem);
+	// else
+	run_msg_thread(td);
 
 	for (i = 0; i < worker_threads; i++) {
 		fpost(&worker_threads_mem[i].futex);
@@ -1315,7 +1323,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 			last_rps_calc = now;
 
 			if (!auto_rps || auto_rps_target_hit)
-				add_lat(&rps_stats, rps);
+				add_lat(&rps_stats, (long)(rps + 0.5));
 
 			delta = tvdelta(&last_calc, &now);
 			if (delta >= interval_usec) {
@@ -1336,7 +1344,7 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 				show_latencies(&rps_stats, "RPS",
 					       "requests", runtime_delta / USEC_PER_SEC,
 					       PLIST_FOR_RPS, PLIST_50);
-				fprintf(stderr, "current rps: %.2f\n", rps);
+				fprintf(stderr, "current rps: %ld\n", (long)(rps + 0.5));
 				total_intervals++;
 			}
 		}
@@ -1348,8 +1356,8 @@ static void sleep_for_runtime(struct thread_data *message_threads_mem)
 				reset_thread_stats(message_threads_mem);
 			}
 		}
-		if (auto_rps)
-			auto_scale_rps(&proc_stat_fd, &total_time, &total_idle);
+		// if (auto_rps)
+		// 	auto_scale_rps(&proc_stat_fd, &total_time, &total_idle);
 		if (!done)
 			sleep(1);
 	}
@@ -1381,7 +1389,7 @@ int main(int ac, char **av)
 		fprintf(stderr, "setting worker threads to %d\n", worker_threads);
 	}
 
-	matrix_size = sqrt(cache_footprint_kb * 1024 / 3 / sizeof(unsigned long));
+	matrix_size = cache_footprint_kb == 128 ? 73 : cache_footprint_kb == 256 ? 103 : 0;
 
 	num_cpu_locks = get_nprocs();
 	per_cpu_locks = calloc(num_cpu_locks, sizeof(struct per_cpu_lock));
@@ -1453,16 +1461,16 @@ int main(int ac, char **av)
 	free(message_threads_mem);
 
 	if (pipe_test) {
-		char *pretty;
-		double mb_per_sec;
+		// char *pretty;
+		// double mb_per_sec;
 
-		show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
-			       PLIST_20 | PLIST_FOR_LAT, PLIST_99);
+		// show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
+		// 	       PLIST_20 | PLIST_FOR_LAT, PLIST_99);
 
-		mb_per_sec = (loop_count * pipe_test * USEC_PER_SEC) / loop_runtime;
-		mb_per_sec = pretty_size(mb_per_sec, &pretty);
-		fprintf(stderr, "avg worker transfer: %.2f ops/sec %.2f%s/s\n",
-		       loops_per_sec, mb_per_sec, pretty);
+		// mb_per_sec = (loop_count * pipe_test * USEC_PER_SEC) / loop_runtime;
+		// mb_per_sec = pretty_size(mb_per_sec, &pretty);
+		// fprintf(stderr, "avg worker transfer: %.2f ops/sec %.2f%s/s\n",
+		//        loops_per_sec, mb_per_sec, pretty);
 	} else {
 		show_latencies(&wakeup_stats, "Wakeup Latencies", "usec", runtime,
 			       PLIST_FOR_LAT, PLIST_99);
@@ -1471,8 +1479,9 @@ int main(int ac, char **av)
 		show_latencies(&rps_stats, "RPS", "requests", runtime,
 			       PLIST_FOR_RPS, PLIST_50);
 		if (!auto_rps)
-			fprintf(stderr, "average rps: %.2f\n",
-				(double)(loop_count) / runtime);
+			fprintf(stderr, "average rps: %ld\n",
+				// (long)(loops_per_sec +0.5));
+				(long)((loop_count + runtime/2) / runtime));
 	}
 
 	return 0;

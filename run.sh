@@ -1,6 +1,6 @@
 #!/bin/bash
 
-args="-i1 -r5 -n5 -F256 $@"
-echo "./schbench $args"
+cmd="taskset -c 24-47 ./schbench_lx -r30 -n10 -F128 $@"
+echo "$cmd"
 
-./schbench_lx $args
+$cmd
